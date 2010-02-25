@@ -453,6 +453,11 @@ module ActiveRecord
         IDENTIFIER_MAX_LENGTH
       end
 
+      def remove_schema_for(full_name, &block) #:nodoc:
+        schema, name = full_name.match(/^(.*\.)?([^\.]*)$/).to_a[1,2]
+        "#{schema}#{block.call(name)}"
+      end
+
       # QUOTING ==================================================
       #
       # see: abstract/quoting.rb
@@ -676,9 +681,10 @@ module ActiveRecord
       # Returns default sequence name for table.
       # Will take all or first 26 characters of table name and append _seq suffix
       def default_sequence_name(table_name, primary_key = nil)
-        # TODO: remove schema prefix if present before truncating
         # truncate table name if necessary to fit in max length of identifier
-        "#{table_name.to_s[0,IDENTIFIER_MAX_LENGTH-4]}_seq"
+        remove_schema_for table_name do |name|
+          "#{name.to_s[0,IDENTIFIER_MAX_LENGTH-4]}_seq"
+        end
       end
 
       # Inserts the given fixture into the table. Overridden to properly handle lobs.
@@ -1071,22 +1077,26 @@ module ActiveRecord
       
       # returned shortened index name if default is too large
       def index_name(table_name, options) #:nodoc:
-        default_name = super(table_name, options)
-        return default_name if default_name.length <= IDENTIFIER_MAX_LENGTH
-        
-        # remove 'index', 'on' and 'and' keywords
-        shortened_name = "i_#{table_name}_#{Array(options[:column]) * '_'}"
-        
-        # leave just first three letters from each word
-        if shortened_name.length > IDENTIFIER_MAX_LENGTH
-          shortened_name = shortened_name.split('_').map{|w| w[0,3]}.join('_')
+        remove_schema_for table_name do |name|
+          default_name = super(name, options)
+          if default_name.length <= IDENTIFIER_MAX_LENGTH
+            default_name
+          else
+            # remove 'index', 'on' and 'and' keywords
+            shortened_name = "i_#{name}_#{Array(options[:column]) * '_'}"
+            
+            # leave just first three letters from each word
+            if shortened_name.length > IDENTIFIER_MAX_LENGTH
+              shortened_name = shortened_name.split('_').map{|w| w[0,3]}.join('_')
+            end
+            # generate unique name using hash function
+            if shortened_name.length > OracleEnhancedAdapter::IDENTIFIER_MAX_LENGTH
+              shortened_name = 'i'+Digest::SHA1.hexdigest(default_name)[0,OracleEnhancedAdapter::IDENTIFIER_MAX_LENGTH-1]
+            end
+            @logger.warn "#{adapter_name} shortened default index name #{default_name} to #{shortened_name}" if @logger
+            shortened_name
+          end
         end
-        # generate unique name using hash function
-        if shortened_name.length > OracleEnhancedAdapter::IDENTIFIER_MAX_LENGTH
-          shortened_name = 'i'+Digest::SHA1.hexdigest(default_name)[0,OracleEnhancedAdapter::IDENTIFIER_MAX_LENGTH-1]
-        end
-        @logger.warn "#{adapter_name} shortened default index name #{default_name} to #{shortened_name}" if @logger
-        shortened_name
       end
 
       def add_column(table_name, column_name, type, options = {}) #:nodoc:
@@ -1527,7 +1537,9 @@ module ActiveRecord
 
       def default_trigger_name(table_name)
         # truncate table name if necessary to fit in max length of identifier
-        "#{table_name.to_s[0,IDENTIFIER_MAX_LENGTH-4]}_pkt"
+        remove_schema_for table_name do |name|
+          "#{name.to_s[0,IDENTIFIER_MAX_LENGTH-4]}_pkt"
+        end
       end
 
       def compress_lines(string, spaced = true)
